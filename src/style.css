@@ -1,15 +1,93 @@
 @import "tailwindcss";
 
 /*
-  Primary color alias — maps to the theme color set in widgetConfig.ts.
-  To change the theme: update themeColor in widgetConfig.ts, then replace
-  "amber" below with the matching Tailwind color name.
+  Identidade visual Equiply (ver src/config/equiply.ts).
+  eq-* são as cores da marca; primary-* aponta para o azul Equiply para os componentes do template.
 */
 @theme {
-  --color-primary-100: var(--color-blue-100);
-  --color-primary-200: var(--color-blue-200);
-  --color-primary-400: var(--color-blue-400);
-  --color-primary-500: var(--color-blue-500);
-  --color-primary-600: var(--color-blue-600);
-  --color-primary-700: var(--color-blue-700);
+  --color-eq-navy: #0b3a5b;
+  --color-eq-navy-dark: #082c46;
+  --color-eq-blue: #1f6fa8;
+  --color-eq-light: #8bc3ec;
+  --color-eq-orange: #fd7945;
+  --color-eq-green: #1e9e5a;
+  --color-eq-red: #d33f3f;
+  --color-eq-bg: #eef4f9;
+  --color-eq-line: #e1e7f0;
+  --color-eq-muted: #5b6b7f;
+
+  --color-primary-100: #e3f1fb;
+  --color-primary-200: #bfddf3;
+  --color-primary-400: #8bc3ec;
+  --color-primary-500: #1f6fa8;
+  --color-primary-600: #1a5f92;
+  --color-primary-700: #0b3a5b;
+
+  --font-sans: Inter, "Segoe UI", system-ui, -apple-system, sans-serif;
+}
+
+body {
+  font-family: var(--font-sans);
+  color: var(--color-eq-navy);
+}
+
+.eq-card {
+  background: #fff;
+  border: 1px solid var(--color-eq-line);
+  border-radius: 14px;
+  box-shadow: 0 1px 3px rgb(20 40 75 / 0.05);
+}
+
+/* ---- FullCalendar com as cores Equiply ---- */
+.eq-cal {
+  --fc-border-color: #e1e7f0;
+  --fc-today-bg-color: #fff3ec;
+  --fc-neutral-bg-color: #f4f8fc;
+  --fc-page-bg-color: #fff;
+  --fc-now-indicator-color: #fd7945;
+  --fc-button-bg-color: #0b3a5b;
+  --fc-button-border-color: #0b3a5b;
+  --fc-button-hover-bg-color: #082c46;
+  --fc-button-hover-border-color: #082c46;
+  --fc-button-active-bg-color: #082c46;
+  --fc-button-active-border-color: #082c46;
+  --fc-list-event-hover-bg-color: #f2f6fa;
+}
+.eq-cal .fc-toolbar { gap: 8px; margin-bottom: 14px; flex-wrap: wrap; }
+.eq-cal .fc-toolbar-title { font-size: 1.15rem; font-weight: 700; color: #0b3a5b; text-transform: none; }
+.eq-cal .fc-button { font-weight: 700; font-size: 0.8rem; text-transform: none; border-radius: 8px; box-shadow: none !important; }
+.eq-cal .fc-button-primary:disabled { background: #6b7a90; border-color: #6b7a90; opacity: 1; }
+.eq-cal .fc-col-header-cell-cushion,
+.eq-cal .fc-daygrid-day-number,
+.eq-cal .fc-list-day-text,
+.eq-cal .fc-list-day-side-text { color: #0b3a5b; text-decoration: none; font-weight: 700; }
+.eq-cal .fc-day-today .fc-col-header-cell-cushion { color: #fd7945; }
+.eq-cal .fc-timegrid-slot-label-cushion { color: #5b6b7f; font-size: 0.7rem; }
+.eq-cal .fc-day-sat:not(.fc-day-today),
+.eq-cal .fc-day-sun:not(.fc-day-today) { background: #f7fafd; }
+.eq-cal .fc-more-link { color: #1f6fa8; font-weight: 700; }
+.eq-cal .fc-list-event-title a { color: #0b3a5b; font-weight: 600; }
+
+/* Eventos: fundo suave + barra lateral na cor do estado */
+.eq-cal .fc-event {
+  border-width: 0 0 0 4px;
+  border-radius: 6px;
+  cursor: pointer;
+  overflow: hidden;
+}
+.eq-ev { padding: 1px 4px; line-height: 1.25; font-size: 11.5px; overflow: hidden; }
+.eq-ev b { font-weight: 700; display: inline; }
+.eq-ev small { display: block; color: #5b6b7f; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.eq-ev-flag {
+  display: inline-grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  margin-left: 4px;
+  border-radius: 50%;
+  background: #d33f3f;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 800;
+  vertical-align: middle;
 }

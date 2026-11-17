@@ -1,0 +1,376 @@
+string standalone.fn_Deals_addEquipmentFromCalendar(String unitLines, String accountId, String contactId, String dealId)
+{
+	// v1.1 | 17/11/2026 | autor: David Domingues
+	// ref. MR-072 (Calendário partilhado 2.0, módulo Reservas: pedido de equipamento) | MR-024
+	// Descrição: junta as unidades escolhidas (cada uma com o seu período) à Oportunidade da Empresa (cria-a só se não houver nenhuma em aberto), num Pedido de Orçamento em Rascunho (uma linha por unidade). NÃO cria Reservas: a Reserva nasce depois, pelo Blueprint.
+	//
+	// Parâmetros (todos texto, enviados pelo widget com ZOHO.CRM.FUNCTIONS.execute):
+	//   unitLines  uma entrada por unidade, "idUnidade:início:fim" (datas yyyy-MM-dd) separadas por vírgulas
+	//              ex.: 1027502000001234567:2026-11-20:2026-11-24,1027502000001234999:2026-11-22:2026-11-23
+	//   accountId  id da Empresa (obrigatório)
+	//   contactId  id do Cliente ('' = usa o da Oportunidade ou o 1.º Cliente da Empresa)
+	//   dealId     id da Oportunidade em aberto escolhida ('' = não existe nenhuma, criar)
+	// Devolve texto: "OK|mensagem" ou "ERRO|mensagem" (o widget separa pelo caracter |)
+	//
+	// Índice: 1) Configuração  2) Validar argumentos  3) Ler o CRM  4) Validar unidades e Oportunidade
+	//         5) Contacto  6) Oportunidade  7) Linhas do Orçamento  8) Orçamento em Rascunho  9) Resultado
+	DEBUG = false;
+	// ===== 1) Configuração (sem ids fixos no código; valores do CRM em constantes) =====
+	VALIDITY_DAYS = 7;
+	DEAL_STAGE = "Pedido de orçamento";
+	CUSTOMER_TYPE = "Empresa (B2B)";
+	QUOTE_STAGE_DRAFT = "Draft";
+	REQUEST_ORIGIN = "Backoffice";
+	DEFAULT_DELIVERY_TYPE = "Levantamento em armazém";
+	closedStages = {"Ganho – Reserva confirm.","Perdido","Closed Won","Closed Lost","Closed Lost to Competition"};
+	blockingItemStatus = {"Pré-reservado","Reservado","Entregue"};
+	unavailableUnitStatus = {"Em manutenção","Avariado","Abatido","Em inspeção"};
+	maintDoneStatus = {"Concluída","Cancelada"};
+	trigOpts = Map();
+	trigOpts.put("trigger",{"workflow"});
+	if(DEBUG)
+	{
+		info "fn_Deals_addEquipmentFromCalendar START | unitLines " + unitLines + " | accountId " + accountId + " | contactId " + contactId + " | dealId " + dealId;
+	}
+	try
+	{
+		// ===== 2) Validar argumentos =====
+		accountId = ifnull(accountId,"").toString().trim();
+		contactId = ifnull(contactId,"").toString().trim();
+		dealId = ifnull(dealId,"").toString().trim();
+		if(accountId == "")
+		{
+			return "ERRO|Indique a Empresa.";
+		}
+		todayText = zoho.currentdate.toString("yyyy-MM-dd");
+		// unitPeriods: idUnidade -> {start, end}. unitList: ids pela ordem recebida.
+		unitList = List();
+		unitPeriods = Map();
+		minStart = "";
+		maxEnd = "";
+		rawLines = ifnull(unitLines,"").toString().toList(",");
+		for each  rawLine in rawLines
+		{
+			parts = rawLine.trim().toList(":");
+			if(parts.size() != 3)
+			{
+				return "ERRO|Pedido inválido: cada unidade precisa do id, da data de início e da data de fim.";
+			}
+			lineUnit = parts.get(0).trim();
+			lineStart = parts.get(1).trim();
+			lineEnd = parts.get(2).trim();
+			if(lineUnit == "" || lineStart == "" || lineEnd == "")
+			{
+				return "ERRO|Indique as datas de início e de fim de cada equipamento.";
+			}
+			if(lineEnd.toDate() < lineStart.toDate())
+			{
+				return "ERRO|A data de fim tem de ser igual ou posterior à de início (em todos os equipamentos).";
+			}
+			if(lineStart.toDate() < todayText.toDate())
+			{
+				return "ERRO|A data de início não pode estar no passado.";
+			}
+			if(unitPeriods.containKey(lineUnit))
+			{
+				return "ERRO|A mesma unidade foi escolhida mais do que uma vez.";
+			}
+			unitList.add(lineUnit);
+			unitPeriods.put(lineUnit,{"start":lineStart,"end":lineEnd});
+			if(minStart == "" || lineStart.toDate() < minStart.toDate())
+			{
+				minStart = lineStart;
+			}
+			if(maxEnd == "" || lineEnd.toDate() > maxEnd.toDate())
+			{
+				maxEnd = lineEnd;
+			}
+		}
+		if(unitList.isEmpty())
+		{
+			return "ERRO|Escolha pelo menos uma unidade.";
+		}
+		// ===== 3) Ler o CRM com tarefas nativas (uma leitura por unidade, sem COQL) =====
+		unitRows = List();
+		reservationRows = List();
+		maintenanceRows = List();
+		for each  unitKey in unitList
+		{
+			unitRec = zoho.crm.getRecordById("Equipment_Units",unitKey.toLong());
+			if(unitRec != null && unitRec.get("id") != null)
+			{
+				unitRows.add(unitRec);
+			}
+			// Itens de Reserva e Manutenções desta unidade (estado e datas confirmam-se na secção 4)
+			foundReservations = zoho.crm.searchRecords("Reservation_Items","(Unit:equals:" + unitKey + ")");
+			reservationRows.addAll(ifnull(foundReservations,List()));
+			foundMaintenances = zoho.crm.searchRecords("Maintenances","(Unit:equals:" + unitKey + ")");
+			maintenanceRows.addAll(ifnull(foundMaintenances,List()));
+		}
+		// Oportunidades e primeiro Cliente da Empresa
+		dealRows = ifnull(zoho.crm.searchRecords("Deals","(Account_Name:equals:" + accountId + ")"),List());
+		contactRows = ifnull(zoho.crm.getRelatedRecords("Contacts","Accounts",accountId.toLong(),1,1),List());
+		if(DEBUG)
+		{
+			info "fn_Deals_addEquipmentFromCalendar units " + unitRows.size() + " | reservation items " + reservationRows.size() + " | maintenances " + maintenanceRows.size() + " | deals " + dealRows.size() + " | contacts " + contactRows.size();
+		}
+		// ===== 4) Validar unidades e Oportunidade =====
+		if(unitRows.size() != unitList.size())
+		{
+			return "ERRO|Alguma das unidades escolhidas já não existe no CRM.";
+		}
+		unitNames = Map();
+		equipmentIds = List();
+		for each  unitRow in unitRows
+		{
+			unitNames.put(unitRow.get("id").toString(),unitRow.get("Name"));
+			if(unavailableUnitStatus.contains(unitRow.get("Operational_Status")))
+			{
+				return "ERRO|A unidade " + unitRow.get("Name") + " não está disponível (" + unitRow.get("Operational_Status") + ").";
+			}
+			if(unitRow.get("Equipment") == null)
+			{
+				return "ERRO|A unidade " + unitRow.get("Name") + " não tem equipamento associado.";
+			}
+			if(!equipmentIds.contains(unitRow.get("Equipment").get("id").toString()))
+			{
+				equipmentIds.add(unitRow.get("Equipment").get("id").toString());
+			}
+		}
+		for each  itemRow in reservationRows
+		{
+			unitKey = itemRow.get("Unit").get("id").toString();
+			period = unitPeriods.get(unitKey);
+			if(blockingItemStatus.contains(itemRow.get("Item_Status")) && period != null && itemRow.get("Start_Date").toDate() <= period.get("end").toDate() && itemRow.get("End_Date").toDate() >= period.get("start").toDate())
+			{
+				itemState = "reservada";
+				if(itemRow.get("Item_Status") == "Pré-reservado")
+				{
+					itemState = "pré-reservada";
+				}
+				return "ERRO|A unidade " + unitNames.get(unitKey) + " já está " + itemState + " no período escolhido (" + period.get("start") + " a " + period.get("end") + ").";
+			}
+		}
+		for each  maintRow in maintenanceRows
+		{
+			if(!maintDoneStatus.contains(maintRow.get("Maintenance_Status")))
+			{
+				maintStart = ifnull(maintRow.get("Start_Date"),maintRow.get("Planned_Date"));
+				maintPeriod = unitPeriods.get(maintRow.get("Unit").get("id").toString());
+				if(maintStart != null && maintPeriod != null)
+				{
+					maintEnd = ifnull(maintRow.get("Expected_Completion_Date"),maintStart);
+					if(maintStart.toDate() <= maintPeriod.get("end").toDate() && maintEnd.toDate() >= maintPeriod.get("start").toDate())
+					{
+						return "ERRO|A unidade " + unitNames.get(maintRow.get("Unit").get("id").toString()) + " está em manutenção no período escolhido (" + maintRow.get("Name") + ").";
+					}
+				}
+			}
+		}
+		// Oportunidades em aberto da Empresa (as fechadas ficam de fora)
+		openDeals = Map();
+		for each  dealRow in dealRows
+		{
+			if(!closedStages.contains(dealRow.get("Stage")))
+			{
+				openDeals.put(dealRow.get("id").toString(),dealRow);
+			}
+		}
+		if(dealId == "" && openDeals.size() > 0)
+		{
+			// o widget só cria quando não há nenhuma em aberto; se entretanto apareceu uma, pede-se para refazer a escolha
+			return "ERRO|Esta Empresa já tem oportunidades em aberto. Feche o painel, volte a abri-lo e escolha a oportunidade.";
+		}
+		if(dealId != "" && !openDeals.containsKey(dealId))
+		{
+			return "ERRO|A oportunidade escolhida já não está em aberto ou não pertence a esta Empresa.";
+		}
+		// ===== 5) Contacto: o Cliente escolhido, senão o da Oportunidade, senão o 1.º Cliente da Empresa =====
+		// (a Oportunidade e o Orçamento exigem Contacto no layout)
+		finalContactId = contactId;
+		if(finalContactId == "" && dealId != "" && openDeals.get(dealId).get("Contact_Name") != null)
+		{
+			finalContactId = openDeals.get(dealId).get("Contact_Name").get("id").toString();
+		}
+		if(finalContactId == "" && contactRows.size() > 0)
+		{
+			finalContactId = contactRows.get(0).get("id").toString();
+		}
+		if(finalContactId == "")
+		{
+			return "ERRO|A Empresa não tem nenhum Cliente. Escolha ou crie um Cliente no pedido.";
+		}
+		// Preço por dia de cada equipamento (List_Price da linha; o fn_Quotes_calcLines recalcula depois)
+		priceMap = Map();
+		for each  equipmentKey in equipmentIds
+		{
+			productRec = zoho.crm.getRecordById("Products",equipmentKey.toLong());
+			if(productRec != null && productRec.get("id") != null)
+			{
+				priceMap.put(equipmentKey,ifnull(productRec.get("Unit_Price"),0));
+			}
+			else
+			{
+				info "WARNING fn_Deals_addEquipmentFromCalendar: could not read product " + equipmentKey + "; line keeps List_Price 0";
+			}
+		}
+		// ===== 6) Oportunidade: só se cria quando não existe nenhuma em aberto =====
+		finalDealId = dealId;
+		dealCreated = false;
+		if(finalDealId == "")
+		{
+			accountRecord = zoho.crm.getRecordById("Accounts",accountId.toLong());
+			if(accountRecord.get("id") == null)
+			{
+				return "ERRO|A Empresa não foi encontrada no CRM.";
+			}
+			dealMap = Map();
+			dealMap.put("Deal_Name","Aluguer " + accountRecord.get("Account_Name") + " " + minStart);
+			dealMap.put("Account_Name",{"id":accountId});
+			dealMap.put("Contact_Name",{"id":finalContactId});
+			dealMap.put("Customer_Type",CUSTOMER_TYPE);
+			dealMap.put("Stage",DEAL_STAGE);
+			dealMap.put("Closing_Date",minStart);
+			dealMap.put("Desired_Start_Date",minStart);
+			dealMap.put("Desired_End_Date",maxEnd);
+			dealMap.put("Request_Description","Pedido criado no Calendário partilhado (" + unitList.size() + " unidade(s)).");
+			dealResp = zoho.crm.createRecord("Deals",dealMap,trigOpts);
+			if(dealResp.get("id") == null)
+			{
+				info "fn_Deals_addEquipmentFromCalendar ERROR creating Deal | " + dealResp;
+				return "ERRO|O CRM não criou a oportunidade: " + dealResp.toString();
+			}
+			finalDealId = dealResp.get("id").toString();
+			dealCreated = true;
+			if(DEBUG)
+			{
+				info "fn_Deals_addEquipmentFromCalendar Deal created: " + finalDealId;
+			}
+		}
+		// ===== 7) Linhas do Orçamento: uma por unidade escolhida =====
+		lines = List();
+		for each  unitRow in unitRows
+		{
+			equipmentId = unitRow.get("Equipment").get("id").toString();
+			line = Map();
+			line.put("Product_Name",{"id":equipmentId});
+			line.put("Quantity",1);
+			line.put("List_Price",ifnull(priceMap.get(equipmentId),0));
+			// cada linha tem o período próprio da unidade
+			line.put("Line_Start_Date",unitPeriods.get(unitRow.get("id").toString()).get("start"));
+			line.put("Line_End_Date",unitPeriods.get(unitRow.get("id").toString()).get("end"));
+			line.put("Description","Unidade " + unitRow.get("Name"));
+			lines.add(line);
+		}
+		// ===== 8) Orçamento em Rascunho da Oportunidade: reutiliza-se se existir, senão cria-se =====
+		draftQuote = null;
+		if(!dealCreated)
+		{
+			// lista relacionada Orçamentos da Oportunidade (índice inicial e final, como no fn_Quotes_calcLines)
+			dealQuotes = zoho.crm.getRelatedRecords("Quotes","Deals",finalDealId.toLong(),1,200);
+			quoteRows = ifnull(dealQuotes,List());
+			for each  quoteRow in quoteRows
+			{
+				if(draftQuote == null && quoteRow.get("Quote_Stage") == QUOTE_STAGE_DRAFT)
+				{
+					draftQuote = quoteRow;
+				}
+			}
+		}
+		if(draftQuote != null)
+		{
+			updMap = Map();
+			// só vão as linhas novas (sem id): o Zoho acrescenta-as às existentes
+			updMap.put("Quoted_Items",lines);
+			// alarga o período do Orçamento (mínimo dos inícios, máximo dos fins) para cobrir todas as linhas
+			oldStart = draftQuote.get("Rental_Start_Date");
+			oldEnd = draftQuote.get("Rental_End_Date");
+			if(oldStart != null && oldStart.toDate() < minStart.toDate())
+			{
+				updMap.put("Rental_Start_Date",oldStart);
+			}
+			else
+			{
+				updMap.put("Rental_Start_Date",minStart);
+			}
+			if(oldEnd != null && oldEnd.toDate() > maxEnd.toDate())
+			{
+				updMap.put("Rental_End_Date",oldEnd);
+			}
+			else
+			{
+				updMap.put("Rental_End_Date",maxEnd);
+			}
+			updList = List();
+			updList.add(updMap);
+			updBody = Map();
+			updBody.put("data",updList);
+			updBody.put("trigger",{"workflow"});
+			updResp = invokeurl
+			[
+				url :"https://www.zohoapis.eu/crm/v8/Quotes/" + draftQuote.get("id")
+				type :PUT
+				parameters:updBody.toString()
+				connection:"crm_quotes"
+			];
+			if(updResp.get("data") == null || updResp.get("data").get(0).get("code") != "SUCCESS")
+			{
+				info "fn_Deals_addEquipmentFromCalendar ERROR updating Quote " + draftQuote.get("id") + " | " + updResp;
+				return "ERRO|O CRM não adicionou o equipamento ao Orçamento em Rascunho: " + updResp.toString();
+			}
+		}
+		else
+		{
+			quoteMap = Map();
+			accountInfo = zoho.crm.getRecordById("Accounts",accountId.toLong());
+			quoteMap.put("Subject","Orc-" + zoho.currentdate.toString("dd-MM-yyyy") + " - " + ifnull(accountInfo.get("Account_Name"),""));
+			quoteMap.put("Quote_Stage",QUOTE_STAGE_DRAFT);
+			quoteMap.put("Deal_Name",{"id":finalDealId});
+			quoteMap.put("Account_Name",{"id":accountId});
+			quoteMap.put("Contact_Name",{"id":finalContactId});
+			quoteMap.put("Valid_Till",zoho.currentdate.addDay(VALIDITY_DAYS).toString("yyyy-MM-dd"));
+			quoteMap.put("Rental_Start_Date",minStart);
+			quoteMap.put("Rental_End_Date",maxEnd);
+			quoteMap.put("Delivery_Type",DEFAULT_DELIVERY_TYPE);
+			quoteMap.put("Request_Origin",REQUEST_ORIGIN);
+			quoteMap.put("Quoted_Items",lines);
+			quoteList = List();
+			quoteList.add(quoteMap);
+			quoteBody = Map();
+			quoteBody.put("data",quoteList);
+			quoteBody.put("trigger",{"workflow"});
+			quoteResp = invokeurl
+			[
+				url :"https://www.zohoapis.eu/crm/v8/Quotes"
+				type :POST
+				parameters:quoteBody.toString()
+				connection:"crm_quotes"
+			];
+			if(quoteResp.get("data") == null || quoteResp.get("data").get(0).get("code") != "SUCCESS")
+			{
+				info "fn_Deals_addEquipmentFromCalendar ERROR creating Quote | dealId " + finalDealId + " | " + quoteResp;
+				if(dealCreated)
+				{
+					return "ERRO|A oportunidade foi criada mas o equipamento não ficou registado (" + quoteResp.toString() + "). Peça a revisão da oportunidade criada.";
+				}
+				return "ERRO|O CRM não criou o Orçamento em Rascunho: " + quoteResp.toString();
+			}
+		}
+		// ===== 9) Resultado =====
+		if(DEBUG)
+		{
+			info "fn_Deals_addEquipmentFromCalendar END | dealId " + finalDealId + " | created " + dealCreated;
+		}
+		if(dealCreated)
+		{
+			return "OK|Oportunidade criada com " + unitList.size() + " unidade(s) num Pedido de Orçamento em Rascunho.";
+		}
+		return "OK|" + unitList.size() + " unidade(s) adicionada(s) à oportunidade em aberto.";
+	}
+	catch (e)
+	{
+		info "fn_Deals_addEquipmentFromCalendar ERROR unexpected: " + e;
+		return "ERRO|Erro inesperado: " + e;
+	}
+	return "ERRO|Erro inesperado.";
+}

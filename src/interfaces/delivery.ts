@@ -1,10 +1,5 @@
 // Valores fixos do CRM (módulo Deliveries_Pickups)
-export type LogisticsStatus =
-  | 'Agendada'
-  | 'Em curso'
-  | 'Concluída'
-  | 'Falhada'
-  | 'Reagendada'
+export type LogisticsStatus = 'Agendada' | 'Em curso' | 'Concluída' | 'Falhada' | 'Reagendada'
 
 export type LogisticsType = 'Entrega' | 'Recolha'
 
@@ -25,12 +20,22 @@ export interface Delivery {
   Scheduled_DateTime: string // ISO 8601 com fuso, ex.: 2026-11-12T09:30:00+00:00
   Responsible: LookupRef | null
   Vehicle: Vehicle | null
-  Address: string | null
+  Delivery_Address: string | null
+  Delivery_Address_City: string | null
   Reservation: LookupRef | null
 }
 
 // Estado dos filtros do calendário ('' = sem filtro)
 export interface CalendarFilters {
+  q: string // pesquisa livre (registo, reserva, morada, responsável)
+  type: LogisticsType | ''
   responsibleId: string
   vehicle: Vehicle | ''
+  mine: boolean // "Só os meus"
+}
+
+// Utilizador do CRM (só o que o widget usa)
+export interface CrmUser {
+  id: string
+  full_name: string
 }
