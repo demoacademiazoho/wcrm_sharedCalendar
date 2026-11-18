@@ -207,12 +207,16 @@ const readMaintenances: Reader = async (start, end, ctx) => {
   const e = toZohoDate(end)
   const select =
     'id, Name, Maintenance_Type, Maintenance_Status, Planned_Date, Start_Date, Expected_Completion_Date, Completion_Date, ' + `${userSel('Technician')}, Unit.Name, Unit.id`
-  // HIPÓTESE: a COQL aceita parênteses e "or" no where; o período usa qualquer das datas da manutenção
-  let where =
-    `(Planned_Date between '${s}' and '${e}' or Start_Date between '${s}' and '${e}' or ` +
-    `Expected_Completion_Date between '${s}' and '${e}' or Completion_Date between '${s}' and '${e}')`
-  if (ctx) where = `Unit = '${ctx.id}' and ${where}`
-  const rows = await coqlAll(select, 'Maintenances', where, 'Planned_Date asc', 'Manutenções')
+  // A COQL recusou o "or" entre parênteses ("error occured while parsing the query"): lê-se uma vez por cada data
+  // da manutenção (Planeada, Início, Fim previsto, Conclusão) e juntam-se os resultados sem repetir o registo.
+  const byId = new Map<string, any>()
+  for (const field of ['Planned_Date', 'Start_Date', 'Expected_Completion_Date', 'Completion_Date']) {
+    const range = `${field} between '${s}' and '${e}'`
+    const where = ctx ? `Unit = '${ctx.id}' and ${range}` : range
+    const part = await coqlAll(select, 'Maintenances', where, `${field} asc`, 'Manutenções')
+    for (const r of part) byId.set(r.id, r)
+  }
+  const rows = [...byId.values()].sort((x, y) => String(x.Planned_Date ?? '').localeCompare(String(y.Planned_Date ?? '')))
   const events: CalEvent[] = rows.map((r) => {
     const from = String(r.Start_Date || r.Planned_Date || r.Expected_Completion_Date || r.Completion_Date).slice(0, 10)
     const to = String(r.Completion_Date || r.Expected_Completion_Date || from).slice(0, 10)
